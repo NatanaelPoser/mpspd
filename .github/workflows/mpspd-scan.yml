@@ -95,6 +95,7 @@ jobs:
             --concurrency "${{ inputs.concurrency || '50' }}" \
             --max-runtime-seconds "${{ inputs.max_runtime_seconds || '21000' }}" \
             --checkpoint-interval 100 \
+            --stop-on-found \
             --import-local \
             $reset_arg
 

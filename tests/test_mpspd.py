@@ -177,10 +177,101 @@ class MpspdCoreTests(unittest.TestCase):
                 self.assertEqual(state.found, 1)
                 self.assertEqual(state.next_photo_id, 23670389)
                 self.assertEqual(state.next_photo_number, 98)
+                self.assertEqual(state.last_status, "found")
                 self.assertTrue((Path(temp_dir) / mpspd.INDEX_FILE).exists())
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_anchor_index_floor_and_ceiling(self):
+        records = [
+            mpspd.FoundRecord(
+                url="https://images.example.test/12189870/19314108/31/",
+                profile_id=12189870,
+                photo_id=19314108,
+                photo_number=31,
+                content_type=None,
+                content_length=None,
+                status=0,
+                discovered_at="manual",
+            ),
+            mpspd.FoundRecord(
+                url="https://images.example.test/12189870/21454611/34/",
+                profile_id=12189870,
+                photo_id=21454611,
+                photo_number=34,
+                content_type=None,
+                content_length=None,
+                status=0,
+                discovered_at="manual",
+            ),
+        ]
+        anchor_index = mpspd.AnchorIndex.from_records(12189870, records)
+
+        self.assertEqual(anchor_index.floor_id(33), 19314108)
+        self.assertEqual(anchor_index.ceiling_id(33), 21454611)
+        self.assertIsNone(anchor_index.floor_id(23))
+        self.assertEqual(anchor_index.ceiling_id(23), 19314108)
+
+    def test_is_photo_number_search_exhausted_respects_anchor_floor(self):
+        anchor_index = mpspd.AnchorIndex.from_records(
+            12189870,
+            [
+                mpspd.FoundRecord(
+                    url="https://images.example.test/12189870/19314108/31/",
+                    profile_id=12189870,
+                    photo_id=19314108,
+                    photo_number=31,
+                    content_type=None,
+                    content_length=None,
+                    status=0,
+                    discovered_at="manual",
+                )
+            ],
+        )
+        state = mpspd.ScanState(
+            base_url="https://images.example.test",
+            profile_id=12189870,
+            next_photo_id=19314108,
+            next_photo_number=33,
+            increment=-1,
+        )
+
+        self.assertTrue(mpspd.is_photo_number_search_exhausted(state, anchor_index))
+
+    def test_advance_state_never_goes_below_zero(self):
+        state = mpspd.ScanState(
+            base_url="https://images.example.test",
+            profile_id=1,
+            next_photo_id=0,
+            next_photo_number=10,
+            increment=-1,
+        )
+
+        mpspd.advance_state(state, count=5)
+
+        self.assertEqual(state.next_photo_id, 0)
+
+    def test_ensure_scan_position_skips_to_next_photo_number_when_floor_hit(self):
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            (output_dir / mpspd.MANUAL_FILE).write_text(
+                "https://images.example.test/12189870/19314108/31/\n"
+                "https://images.example.test/12189870/21454611/34/\n",
+                encoding="utf-8",
+            )
+            state = mpspd.ScanState(
+                base_url="https://images.example.test",
+                profile_id=12189870,
+                next_photo_id=19314108,
+                next_photo_number=33,
+                increment=-1,
+            )
+            anchor_index = mpspd.load_anchor_index(output_dir, state.profile_id, [])
+
+            self.assertTrue(mpspd.ensure_scan_position(state, anchor_index))
+            self.assertEqual(state.next_photo_number, 32)
+            self.assertEqual(state.next_photo_id, 21454611)
 
 
 if __name__ == "__main__":

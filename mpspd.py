@@ -28,7 +28,8 @@ FOUND_FILE = "found_links.jsonl"
 MANUAL_FILE = "manual_links.txt"
 INDEX_FILE = "index.html"
 STOP_FILE = "STOP"
-VERSION = "2.0.0"
+MIN_PHOTO_ID = 0
+VERSION = "2.1.0"
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,120 @@ class ProbeResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class AnchorPoint:
+    photo_number: int
+    photo_id: int
+
+
+class AnchorIndex:
+    def __init__(self, anchors: dict[int, AnchorPoint]):
+        self.by_number = anchors
+        self.sorted_numbers = sorted(anchors.keys())
+
+    @classmethod
+    def from_records(cls, profile_id: int, records: list[FoundRecord]) -> AnchorIndex:
+        by_number: dict[int, int] = {}
+        for record in records:
+            if record.profile_id != profile_id:
+                continue
+            current = by_number.get(record.photo_number)
+            if current is None or record.photo_id > current:
+                by_number[record.photo_number] = record.photo_id
+        return cls({number: AnchorPoint(number, photo_id) for number, photo_id in by_number.items()})
+
+    def floor_id(self, photo_number: int) -> int | None:
+        floor: int | None = None
+        for number in self.sorted_numbers:
+            if number >= photo_number:
+                break
+            floor = self.by_number[number].photo_id
+        return floor
+
+    def ceiling_id(self, photo_number: int) -> int | None:
+        for number in self.sorted_numbers:
+            if number > photo_number:
+                return self.by_number[number].photo_id
+        return None
+
+
+def load_anchor_index(output_dir: Path, profile_id: int, found_records: list[FoundRecord]) -> AnchorIndex:
+    manual_records = load_manual_records(output_dir / MANUAL_FILE)
+    return AnchorIndex.from_records(profile_id, manual_records + found_records)
+
+
+def clamp_photo_id(photo_id: int) -> int:
+    return max(MIN_PHOTO_ID, photo_id)
+
+
+def initial_photo_id_for_number(state: ScanState, anchor_index: AnchorIndex) -> int:
+    photo_number = state.next_photo_number
+    if state.increment < 0:
+        ceiling = anchor_index.ceiling_id(photo_number)
+        if ceiling is not None:
+            return clamp_photo_id(ceiling)
+        floor = anchor_index.floor_id(photo_number)
+        if floor is not None:
+            return clamp_photo_id(floor + 1)
+        return clamp_photo_id(state.next_photo_id)
+
+    floor = anchor_index.floor_id(photo_number)
+    if floor is not None:
+        return clamp_photo_id(floor + 1)
+    return clamp_photo_id(state.next_photo_id)
+
+
+def is_photo_number_search_exhausted(state: ScanState, anchor_index: AnchorIndex) -> bool:
+    floor = anchor_index.floor_id(state.next_photo_number)
+    ceiling = anchor_index.ceiling_id(state.next_photo_number)
+    photo_id = clamp_photo_id(state.next_photo_id)
+
+    if state.increment < 0:
+        return floor is not None and photo_id <= floor
+
+    return ceiling is not None and photo_id >= ceiling
+
+
+def ensure_scan_position(state: ScanState, anchor_index: AnchorIndex) -> bool:
+    while True:
+        if state.next_photo_number < 0:
+            return False
+
+        state.next_photo_id = clamp_photo_id(state.next_photo_id)
+
+        if state.increment < 0:
+            ceiling = anchor_index.ceiling_id(state.next_photo_number)
+            if ceiling is not None and state.next_photo_id > ceiling:
+                state.next_photo_id = ceiling
+        else:
+            floor = anchor_index.floor_id(state.next_photo_number)
+            if floor is not None and state.next_photo_id <= floor:
+                state.next_photo_id = floor + 1
+
+        if is_photo_number_search_exhausted(state, anchor_index):
+            state.next_photo_number += state.increment
+            state.next_photo_id = initial_photo_id_for_number(state, anchor_index)
+            continue
+
+        floor = anchor_index.floor_id(state.next_photo_number)
+        if state.increment < 0 and floor is None and state.next_photo_id <= MIN_PHOTO_ID:
+            return False
+
+        return True
+
+
+def scan_position_status(state: ScanState, anchor_index: AnchorIndex) -> str:
+    if state.next_photo_number < 0:
+        return "photo_number_exhausted"
+    if (
+        state.increment < 0
+        and state.next_photo_id <= MIN_PHOTO_ID
+        and anchor_index.floor_id(state.next_photo_number) is None
+    ):
+        return "photo_id_floor_reached"
+    return "photo_number_exhausted"
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -153,11 +268,16 @@ def candidate_from_state(state: ScanState) -> Candidate:
 
 def advance_state(state: ScanState, count: int = 1) -> None:
     state.next_photo_id += state.increment * count
+    state.next_photo_id = clamp_photo_id(state.next_photo_id)
 
 
-def advance_after_found(state: ScanState, candidate: Candidate) -> None:
-    state.next_photo_id = candidate.photo_id + state.increment
+def advance_after_found(state: ScanState, candidate: Candidate, anchor_index: AnchorIndex) -> None:
     state.next_photo_number = candidate.photo_number + state.increment
+    adjacent_id = clamp_photo_id(candidate.photo_id + state.increment)
+    if candidate.photo_number + state.increment == state.next_photo_number:
+        state.next_photo_id = adjacent_id
+        return
+    state.next_photo_id = initial_photo_id_for_number(state, anchor_index)
 
 
 def load_state(path: Path) -> ScanState | None:
@@ -464,10 +584,13 @@ async def run_scan(args: argparse.Namespace) -> int:
     records = load_found_records(found_path)
     state.found = len(records)
     seen = {found_key(record) for record in records}
+    anchor_index = load_anchor_index(output_dir, state.profile_id, records)
+    ensure_scan_position(state, anchor_index)
     start_time = time.monotonic()
     total_candidates = 0
     checkpoint_counter = 0
     delay_seconds = max(0.0, args.request_delay)
+    stop_after_found = args.stop_on_found
 
     connector = aiohttp.TCPConnector(limit=args.concurrency)
     async with aiohttp.ClientSession(connector=connector) as session:
@@ -492,11 +615,19 @@ async def run_scan(args: argparse.Namespace) -> int:
                 break
 
             candidates = []
-            for _ in range(batch_size):
+            while len(candidates) < batch_size:
+                if not ensure_scan_position(state, anchor_index):
+                    state.last_status = scan_position_status(state, anchor_index)
+                    break
                 candidate = candidate_from_state(state)
                 candidates.append(candidate)
                 advance_state(state)
                 total_candidates += 1
+                if args.max_candidates and total_candidates >= args.max_candidates:
+                    break
+
+            if not candidates:
+                break
 
             tasks = [
                 asyncio.create_task(
@@ -549,8 +680,10 @@ async def run_scan(args: argparse.Namespace) -> int:
                         records.append(record)
                         seen.add(key)
                         state.found = len(records)
+                        anchor_index = load_anchor_index(output_dir, state.profile_id, records)
 
-                    advance_after_found(state, result.candidate)
+                    advance_after_found(state, result.candidate, anchor_index)
+                    ensure_scan_position(state, anchor_index)
                     state.last_found_url = result.candidate.url
                     state.consecutive_errors = 0
                     state.last_error = None
@@ -575,6 +708,11 @@ async def run_scan(args: argparse.Namespace) -> int:
                 save_state(state_path, state)
                 render_index(index_path, state, records, stop_enabled=stop_path.exists())
                 checkpoint_counter = 0
+
+            if found_in_batch and stop_after_found:
+                save_state(state_path, state)
+                render_index(index_path, state, records, stop_enabled=stop_path.exists())
+                break
 
             if delay_seconds:
                 await asyncio.sleep(delay_seconds)
@@ -642,6 +780,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--request-delay", type=float, default=DEFAULT_REQUEST_DELAY_SECONDS)
     scan_parser.add_argument("--reset", action="store_true")
     scan_parser.add_argument("--import-local", action="store_true")
+    scan_parser.add_argument("--stop-on-found", action=argparse.BooleanOptionalAction, default=True)
     scan_parser.set_defaults(func=lambda args: asyncio.run(run_scan(args)))
 
     return parser
