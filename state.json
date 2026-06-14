@@ -2,16 +2,16 @@
   "base_url": "https://images.meupatrocinio.com",
   "consecutive_errors": 0,
   "found": 2,
-  "increment": -1,
+  "increment": 1,
   "last_error": null,
   "last_found_url": null,
   "last_probe_status": 403,
   "last_status": "runtime_limit_reached",
-  "last_url": "https://images.meupatrocinio.com/12189870/18860580/30/",
-  "next_photo_id": 18860559,
-  "next_photo_number": 30,
+  "last_url": "https://images.meupatrocinio.com/12189870/16584721/24/",
+  "next_photo_id": 16584722,
+  "next_photo_number": 24,
   "profile_id": 12189870,
-  "scanned": 299000,
+  "scanned": 669550,
   "skipped_photo_numbers": [],
-  "updated_at": "2026-06-14T02:55:35+00:00"
+  "updated_at": "2026-06-14T03:03:38+00:00"
 }
