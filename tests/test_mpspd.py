@@ -207,67 +207,6 @@ class MpspdCoreTests(unittest.TestCase):
 
         self.assertEqual(state.skipped_photo_numbers, [32, 33])
 
-    def test_binary_search_finds_hidden_photo_id(self):
-        class Handler(BaseHTTPRequestHandler):
-            target_id = 20741110
-
-            def do_HEAD(self):
-                if self.path == f"/12189870/{self.target_id}/33/":
-                    self.send_response(200)
-                    self.send_header("content-type", "image/jpeg")
-                    self.send_header("content-length", "12")
-                    self.end_headers()
-                else:
-                    self.send_response(404)
-                    self.end_headers()
-
-            def log_message(self, format, *args):
-                return
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            with TemporaryDirectory() as temp_dir:
-                output_dir = Path(temp_dir)
-                (output_dir / mpspd.MANUAL_FILE).write_text(
-                    "https://127.0.0.1:1/12189870/19314108/31/\n"
-                    "https://127.0.0.1:1/12189870/21454611/34/\n".replace("127.0.0.1:1", f"127.0.0.1:{server.server_port}"),
-                    encoding="utf-8",
-                )
-                seed_url = f"http://127.0.0.1:{server.server_port}/12189870/21454611/34/"
-                rc = mpspd.main(
-                    [
-                        "scan",
-                        "--seed-url",
-                        seed_url,
-                        "--output-dir",
-                        str(output_dir),
-                        "--increment",
-                        "-1",
-                        "--reset",
-                        "--max-candidates",
-                        "30",
-                        "--concurrency",
-                        "1",
-                        "--max-runtime-seconds",
-                        "10",
-                        "--retries",
-                        "0",
-                    ]
-                )
-
-                self.assertEqual(rc, 0)
-                records = mpspd.load_found_records(output_dir / mpspd.FOUND_FILE)
-                state = mpspd.load_state(output_dir / mpspd.STATE_FILE)
-                self.assertEqual(len(records), 1)
-                self.assertEqual(records[0].photo_id, Handler.target_id)
-                self.assertEqual(records[0].photo_number, 33)
-                self.assertLessEqual(state.scanned, 25)
-        finally:
-            server.shutdown()
-            server.server_close()
-
     def test_anchor_index_floor_and_ceiling(self):
         records = [
             mpspd.FoundRecord(

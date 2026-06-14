@@ -29,7 +29,7 @@ MANUAL_FILE = "manual_links.txt"
 INDEX_FILE = "index.html"
 STOP_FILE = "STOP"
 MIN_PHOTO_ID = 0
-VERSION = "2.2.0"
+VERSION = "2.2.1"
 
 
 @dataclass(frozen=True)
@@ -66,8 +66,6 @@ class ScanState:
     last_found_url: str | None = None
     updated_at: str | None = None
     skipped_photo_numbers: list[int] = field(default_factory=list)
-    search_low: int | None = None
-    search_high: int | None = None
 
 
 @dataclass(frozen=True)
@@ -198,96 +196,6 @@ def mark_exhausted_photo_numbers(
         mark_photo_number_skipped(state, photo_number)
 
 
-def estimate_photo_id(photo_number: int, anchor_index: AnchorIndex) -> int | None:
-    floor_anchor = anchor_index.floor_anchor(photo_number)
-    ceiling_anchor = anchor_index.ceiling_anchor(photo_number)
-    if floor_anchor is None or ceiling_anchor is None:
-        return None
-    number_gap = ceiling_anchor.photo_number - floor_anchor.photo_number
-    if number_gap <= 0:
-        return None
-    id_gap = ceiling_anchor.photo_id - floor_anchor.photo_id
-    offset = photo_number - floor_anchor.photo_number
-    return floor_anchor.photo_id + (id_gap * offset) // number_gap
-
-
-def search_bounds_for_number(state: ScanState, anchor_index: AnchorIndex) -> tuple[int, int] | None:
-    photo_number = state.next_photo_number
-    floor_id = anchor_index.floor_id(photo_number)
-    ceiling_id = anchor_index.ceiling_id(photo_number)
-
-    if state.increment < 0:
-        low = (floor_id + 1) if floor_id is not None else MIN_PHOTO_ID
-        high = (ceiling_id - 1) if ceiling_id is not None else None
-        if high is None:
-            return None
-        if high < low:
-            return None
-        return low, high
-
-    low = (floor_id + 1) if floor_id is not None else MIN_PHOTO_ID
-    high = (ceiling_id - 1) if ceiling_id is not None else None
-    if high is None:
-        return None
-    if high < low:
-        return None
-    return low, high
-
-
-def reset_search_window(state: ScanState, anchor_index: AnchorIndex) -> None:
-    bounds = search_bounds_for_number(state, anchor_index)
-    if bounds is None:
-        state.search_low = None
-        state.search_high = None
-        state.next_photo_id = initial_photo_id_for_number(state, anchor_index)
-        return
-
-    low, high = bounds
-    state.search_low = low
-    state.search_high = high
-    if low <= state.next_photo_id <= high:
-        return
-    estimate = estimate_photo_id(state.next_photo_number, anchor_index)
-    if estimate is not None:
-        state.next_photo_id = clamp_photo_id(min(high, max(low, estimate)))
-        return
-    state.next_photo_id = clamp_photo_id((low + high) // 2)
-
-
-def clear_search_window(state: ScanState) -> None:
-    state.search_low = None
-    state.search_high = None
-
-
-def advance_after_probe_miss(state: ScanState, probe_id: int, anchor_index: AnchorIndex) -> None:
-    if state.search_low is None or state.search_high is None:
-        return
-
-    estimate = estimate_photo_id(state.next_photo_number, anchor_index)
-    if state.increment < 0:
-        if estimate is not None and probe_id > estimate:
-            state.search_high = min(state.search_high, probe_id - 1)
-        elif estimate is not None and probe_id < estimate:
-            state.search_low = max(state.search_low, probe_id + 1)
-        else:
-            state.search_high = min(state.search_high, probe_id - 1)
-    elif estimate is not None and probe_id < estimate:
-        state.search_low = max(state.search_low, probe_id + 1)
-    elif estimate is not None and probe_id > estimate:
-        state.search_high = min(state.search_high, probe_id - 1)
-    else:
-        state.search_low = max(state.search_low, probe_id + 1)
-
-    if state.search_low > state.search_high:
-        return
-
-    state.next_photo_id = clamp_photo_id((state.search_low + state.search_high) // 2)
-
-
-def is_search_window_exhausted(state: ScanState) -> bool:
-    return state.search_low is not None and state.search_high is not None and state.search_low > state.search_high
-
-
 def initial_photo_id_for_number(state: ScanState, anchor_index: AnchorIndex) -> int:
     photo_number = state.next_photo_number
     if state.increment < 0:
@@ -324,7 +232,6 @@ def advance_after_boundary_exhausted(state: ScanState, anchor_index: AnchorIndex
             mark_exhausted_photo_numbers(state, exhausted_number, floor_anchor, state.increment)
             state.next_photo_number = floor_anchor.photo_number + state.increment
             state.next_photo_id = clamp_photo_id(floor_anchor.photo_id + state.increment)
-            clear_search_window(state)
             return
     else:
         ceiling_anchor = anchor_index.ceiling_anchor(state.next_photo_number)
@@ -332,12 +239,10 @@ def advance_after_boundary_exhausted(state: ScanState, anchor_index: AnchorIndex
             mark_exhausted_photo_numbers(state, exhausted_number, ceiling_anchor, state.increment)
             state.next_photo_number = ceiling_anchor.photo_number + state.increment
             state.next_photo_id = clamp_photo_id(ceiling_anchor.photo_id + state.increment)
-            clear_search_window(state)
             return
 
     mark_photo_number_skipped(state, exhausted_number)
     state.next_photo_number += state.increment
-    clear_search_window(state)
     state.next_photo_id = initial_photo_id_for_number(state, anchor_index)
 
 
@@ -348,7 +253,6 @@ def ensure_scan_position(state: ScanState, anchor_index: AnchorIndex) -> bool:
 
         while state.next_photo_number in skipped_photo_number_set(state):
             state.next_photo_number += state.increment
-            clear_search_window(state)
             if state.next_photo_number < 0:
                 return False
 
@@ -358,25 +262,14 @@ def ensure_scan_position(state: ScanState, anchor_index: AnchorIndex) -> bool:
             advance_after_boundary_exhausted(state, anchor_index)
             continue
 
-        if state.search_low is None and state.search_high is None:
-            reset_search_window(state, anchor_index)
-
         if state.increment < 0:
             ceiling = anchor_index.ceiling_id(state.next_photo_number)
             if ceiling is not None and state.next_photo_id > ceiling:
                 state.next_photo_id = ceiling
-                if state.search_high is not None:
-                    state.search_high = min(state.search_high, ceiling)
         else:
             floor = anchor_index.floor_id(state.next_photo_number)
             if floor is not None and state.next_photo_id <= floor:
                 state.next_photo_id = floor + 1
-                if state.search_low is not None:
-                    state.search_low = max(state.search_low, floor + 1)
-
-        if is_search_window_exhausted(state):
-            advance_after_boundary_exhausted(state, anchor_index)
-            continue
 
         if is_photo_number_search_exhausted(state, anchor_index):
             advance_after_boundary_exhausted(state, anchor_index)
@@ -453,13 +346,12 @@ def advance_state(state: ScanState, count: int = 1) -> None:
 
 
 def advance_after_found(state: ScanState, candidate: Candidate, anchor_index: AnchorIndex) -> None:
-    clear_search_window(state)
     state.next_photo_number = candidate.photo_number + state.increment
     adjacent_id = clamp_photo_id(candidate.photo_id + state.increment)
     if candidate.photo_number + state.increment == state.next_photo_number:
         state.next_photo_id = adjacent_id
         return
-    reset_search_window(state, anchor_index)
+    state.next_photo_id = initial_photo_id_for_number(state, anchor_index)
 
 
 def load_state(path: Path) -> ScanState | None:
@@ -468,8 +360,8 @@ def load_state(path: Path) -> ScanState | None:
 
     data = json.loads(path.read_text(encoding="utf-8"))
     data.setdefault("skipped_photo_numbers", [])
-    data.setdefault("search_low", None)
-    data.setdefault("search_high", None)
+    data.pop("search_low", None)
+    data.pop("search_high", None)
     return ScanState(**data)
 
 
@@ -751,8 +643,6 @@ async def run_scan(args: argparse.Namespace) -> int:
         seed = parse_seed_url(args.seed_url)
         state = state_from_seed(seed, args.increment)
         state.skipped_photo_numbers = []
-        state.search_low = None
-        state.search_high = None
 
     if args.import_local:
         import_local_images(output_dir, base_url=state.base_url)
@@ -795,15 +685,9 @@ async def run_scan(args: argparse.Namespace) -> int:
                 if not ensure_scan_position(state, anchor_index):
                     state.last_status = scan_position_status(state, anchor_index)
                     break
-                binary_active = state.search_low is not None and state.search_high is not None
-                if binary_active and candidates:
-                    break
                 candidates.append(candidate_from_state(state))
-                if not binary_active:
-                    advance_state(state)
+                advance_state(state)
                 total_candidates += 1
-                if binary_active:
-                    break
                 if args.max_candidates and total_candidates >= args.max_candidates:
                     break
 
@@ -874,10 +758,6 @@ async def run_scan(args: argparse.Namespace) -> int:
                     state.last_status = f"transient_error:{result.status or result.error}"
                 else:
                     state.last_status = f"miss:{result.status}"
-                    advance_after_probe_miss(state, result.candidate.photo_id, anchor_index)
-                    if is_search_window_exhausted(state):
-                        advance_after_boundary_exhausted(state, anchor_index)
-                        ensure_scan_position(state, anchor_index)
 
             if found_in_batch:
                 state.last_status = "found"
