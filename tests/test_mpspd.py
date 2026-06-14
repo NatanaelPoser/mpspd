@@ -128,12 +128,14 @@ class MpspdCoreTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             state = json.loads((Path(temp_dir) / mpspd.STATE_FILE).read_text(encoding="utf-8"))
             self.assertEqual(state["profile_id"], 325966)
+            self.assertEqual(state["next_photo_number"], 98)
+            self.assertEqual(state["next_photo_id"], 23670389)
             self.assertTrue((Path(temp_dir) / mpspd.INDEX_FILE).exists())
 
     def test_scan_command_finds_image_from_fake_server(self):
         class Handler(BaseHTTPRequestHandler):
             def do_HEAD(self):
-                if self.path == "/325966/23670390/99/":
+                if self.path == "/325966/23670389/98/":
                     self.send_response(200)
                     self.send_header("content-type", "image/jpeg")
                     self.send_header("content-length", "12")
@@ -159,7 +161,7 @@ class MpspdCoreTests(unittest.TestCase):
                         "--output-dir",
                         temp_dir,
                         "--max-candidates",
-                        "2",
+                        "5",
                         "--concurrency",
                         "2",
                         "--max-runtime-seconds",
@@ -173,12 +175,95 @@ class MpspdCoreTests(unittest.TestCase):
                 records = mpspd.load_found_records(Path(temp_dir) / mpspd.FOUND_FILE)
                 state = mpspd.load_state(Path(temp_dir) / mpspd.STATE_FILE)
                 self.assertEqual(len(records), 1)
-                self.assertEqual(records[0].photo_id, 23670390)
+                self.assertEqual(records[0].photo_id, 23670389)
+                self.assertEqual(records[0].photo_number, 98)
                 self.assertEqual(state.found, 1)
-                self.assertEqual(state.next_photo_id, 23670389)
-                self.assertEqual(state.next_photo_number, 98)
+                self.assertEqual(state.next_photo_id, 23670388)
+                self.assertEqual(state.next_photo_number, 97)
                 self.assertEqual(state.last_status, "found")
                 self.assertTrue((Path(temp_dir) / mpspd.INDEX_FILE).exists())
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_state_from_seed_starts_at_next_photo(self):
+        seed = mpspd.parse_seed_url("https://images.example.test/12189870/23649636/46/")
+        state = mpspd.state_from_seed(seed, increment=-1)
+
+        self.assertEqual(state.next_photo_number, 45)
+        self.assertEqual(state.next_photo_id, 23649635)
+
+    def test_mark_exhausted_photo_numbers_records_skipped(self):
+        state = mpspd.ScanState(
+            base_url="https://images.example.test",
+            profile_id=12189870,
+            next_photo_id=19314108,
+            next_photo_number=33,
+            increment=-1,
+        )
+        floor_anchor = mpspd.AnchorPoint(photo_number=31, photo_id=19314108)
+
+        mpspd.mark_exhausted_photo_numbers(state, 33, floor_anchor, -1)
+
+        self.assertEqual(state.skipped_photo_numbers, [32, 33])
+
+    def test_binary_search_finds_hidden_photo_id(self):
+        class Handler(BaseHTTPRequestHandler):
+            target_id = 20741110
+
+            def do_HEAD(self):
+                if self.path == f"/12189870/{self.target_id}/33/":
+                    self.send_response(200)
+                    self.send_header("content-type", "image/jpeg")
+                    self.send_header("content-length", "12")
+                    self.end_headers()
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, format, *args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with TemporaryDirectory() as temp_dir:
+                output_dir = Path(temp_dir)
+                (output_dir / mpspd.MANUAL_FILE).write_text(
+                    "https://127.0.0.1:1/12189870/19314108/31/\n"
+                    "https://127.0.0.1:1/12189870/21454611/34/\n".replace("127.0.0.1:1", f"127.0.0.1:{server.server_port}"),
+                    encoding="utf-8",
+                )
+                seed_url = f"http://127.0.0.1:{server.server_port}/12189870/21454611/34/"
+                rc = mpspd.main(
+                    [
+                        "scan",
+                        "--seed-url",
+                        seed_url,
+                        "--output-dir",
+                        str(output_dir),
+                        "--increment",
+                        "-1",
+                        "--reset",
+                        "--max-candidates",
+                        "30",
+                        "--concurrency",
+                        "1",
+                        "--max-runtime-seconds",
+                        "10",
+                        "--retries",
+                        "0",
+                    ]
+                )
+
+                self.assertEqual(rc, 0)
+                records = mpspd.load_found_records(output_dir / mpspd.FOUND_FILE)
+                state = mpspd.load_state(output_dir / mpspd.STATE_FILE)
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0].photo_id, Handler.target_id)
+                self.assertEqual(records[0].photo_number, 33)
+                self.assertLessEqual(state.scanned, 25)
         finally:
             server.shutdown()
             server.server_close()
@@ -272,6 +357,7 @@ class MpspdCoreTests(unittest.TestCase):
             self.assertTrue(mpspd.ensure_scan_position(state, anchor_index))
             self.assertEqual(state.next_photo_number, 30)
             self.assertEqual(state.next_photo_id, 19314107)
+            self.assertEqual(state.skipped_photo_numbers, [32, 33])
 
 
 if __name__ == "__main__":
