@@ -129,17 +129,25 @@ class AnchorIndex:
         return cls({number: AnchorPoint(number, photo_id) for number, photo_id in by_number.items()})
 
     def floor_id(self, photo_number: int) -> int | None:
-        floor: int | None = None
+        anchor = self.floor_anchor(photo_number)
+        return anchor.photo_id if anchor is not None else None
+
+    def floor_anchor(self, photo_number: int) -> AnchorPoint | None:
+        result: AnchorPoint | None = None
         for number in self.sorted_numbers:
             if number >= photo_number:
                 break
-            floor = self.by_number[number].photo_id
-        return floor
+            result = self.by_number[number]
+        return result
 
     def ceiling_id(self, photo_number: int) -> int | None:
+        anchor = self.ceiling_anchor(photo_number)
+        return anchor.photo_id if anchor is not None else None
+
+    def ceiling_anchor(self, photo_number: int) -> AnchorPoint | None:
         for number in self.sorted_numbers:
             if number > photo_number:
-                return self.by_number[number].photo_id
+                return self.by_number[number]
         return None
 
 
@@ -180,6 +188,24 @@ def is_photo_number_search_exhausted(state: ScanState, anchor_index: AnchorIndex
     return ceiling is not None and photo_id >= ceiling
 
 
+def advance_after_boundary_exhausted(state: ScanState, anchor_index: AnchorIndex) -> None:
+    if state.increment < 0:
+        floor_anchor = anchor_index.floor_anchor(state.next_photo_number)
+        if floor_anchor is not None:
+            state.next_photo_number = floor_anchor.photo_number + state.increment
+            state.next_photo_id = clamp_photo_id(floor_anchor.photo_id + state.increment)
+            return
+    else:
+        ceiling_anchor = anchor_index.ceiling_anchor(state.next_photo_number)
+        if ceiling_anchor is not None:
+            state.next_photo_number = ceiling_anchor.photo_number + state.increment
+            state.next_photo_id = clamp_photo_id(ceiling_anchor.photo_id + state.increment)
+            return
+
+    state.next_photo_number += state.increment
+    state.next_photo_id = initial_photo_id_for_number(state, anchor_index)
+
+
 def ensure_scan_position(state: ScanState, anchor_index: AnchorIndex) -> bool:
     while True:
         if state.next_photo_number < 0:
@@ -197,8 +223,7 @@ def ensure_scan_position(state: ScanState, anchor_index: AnchorIndex) -> bool:
                 state.next_photo_id = floor + 1
 
         if is_photo_number_search_exhausted(state, anchor_index):
-            state.next_photo_number += state.increment
-            state.next_photo_id = initial_photo_id_for_number(state, anchor_index)
+            advance_after_boundary_exhausted(state, anchor_index)
             continue
 
         floor = anchor_index.floor_id(state.next_photo_number)

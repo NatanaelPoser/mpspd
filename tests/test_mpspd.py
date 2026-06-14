@@ -252,7 +252,7 @@ class MpspdCoreTests(unittest.TestCase):
 
         self.assertEqual(state.next_photo_id, 0)
 
-    def test_ensure_scan_position_skips_to_next_photo_number_when_floor_hit(self):
+    def test_ensure_scan_position_jumps_below_floor_anchor_when_exhausted(self):
         with TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
             (output_dir / mpspd.MANUAL_FILE).write_text(
@@ -270,8 +270,8 @@ class MpspdCoreTests(unittest.TestCase):
             anchor_index = mpspd.load_anchor_index(output_dir, state.profile_id, [])
 
             self.assertTrue(mpspd.ensure_scan_position(state, anchor_index))
-            self.assertEqual(state.next_photo_number, 32)
-            self.assertEqual(state.next_photo_id, 21454611)
+            self.assertEqual(state.next_photo_number, 30)
+            self.assertEqual(state.next_photo_id, 19314107)
 
 
 if __name__ == "__main__":
