@@ -6,12 +6,12 @@
   "last_error": null,
   "last_found_url": null,
   "last_probe_status": 403,
-  "last_status": "runtime_limit_reached",
-  "last_url": "https://images.meupatrocinio.com/12189870/52583379/47/",
-  "next_photo_id": 52583380,
+  "last_status": "miss:403",
+  "last_url": "https://images.meupatrocinio.com/12189870/104716170/47/",
+  "next_photo_id": 104716180,
   "next_photo_number": 47,
   "profile_id": 12189870,
-  "scanned": 36668200,
+  "scanned": 88801000,
   "skipped_photo_numbers": [
     24,
     25,
@@ -29,5 +29,5 @@
     43,
     45
   ],
-  "updated_at": "2026-06-14T08:58:59+00:00"
+  "updated_at": "2026-06-14T13:23:06+00:00"
 }
