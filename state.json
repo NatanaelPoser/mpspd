@@ -7,16 +7,16 @@
   "last_found_url": null,
   "last_probe_status": 403,
   "last_status": "runtime_limit_reached",
-  "last_url": "https://images.meupatrocinio.com/13918674/640052969/8/",
-  "next_photo_id": 640052973,
+  "last_url": "https://images.meupatrocinio.com/13918674/680181322/8/",
+  "next_photo_id": 680181323,
   "next_photo_number": 8,
   "profile_id": 13918674,
-  "scanned": 618644600,
+  "scanned": 658772950,
   "skipped_photo_numbers": [
     3,
     4,
     5,
     6
   ],
-  "updated_at": "2026-06-20T12:53:53+00:00"
+  "updated_at": "2026-06-20T18:44:10+00:00"
 }
